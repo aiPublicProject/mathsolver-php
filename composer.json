@@ -1,0 +1,12 @@
+{
+  "name": "mathsolver/mathsolver",
+  "description": "BYOK AI math solver with independent verification — bring your own OpenAI-compatible API key, answers verified by local expression evaluation.",
+  "type": "library",
+  "license": "MIT",
+  "homepage": "https://mathsolver.help",
+  "keywords": ["math", "solver", "ai", "byok", "verification", "step-by-step"],
+  "authors": [{ "name": "mathsolver.help" }],
+  "support": { "issues": "https://github.com/mathsolver-help/mathsolver-php/issues" },
+  "require": { "php": ">=8.1" },
+  "autoload": { "psr-4": { "MathSolver\\": "src/" } }
+}
