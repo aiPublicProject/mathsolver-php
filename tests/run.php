@@ -46,7 +46,7 @@ $solver = new Solver('sk-test', 'https://api.deepseek.com/v1', 'deepseek-chat',
     function ($url, $body, $key) use (&$calls, &$seen) {
         $calls++;
         $seen = [$url, $body, $key];
-        return json_encode(['choices' => [['message' => ['content' => $GLOBALS['GOOD']]]]]);
+        return $GLOBALS['GOOD'];
     });
 $r = $solver->solve('2x + 3 = 11, solve for x');
 check('verified first try', $r['verified'] === true && $r['retries'] === 0 && abs($r['evaluated'] - 4) < 1e-9 && $calls === 1);
@@ -56,18 +56,16 @@ check('url/body/key passed', str_ends_with($seen[0], '/chat/completions') && $se
 $n = 0;
 $r = (new Solver('sk', 'https://api.x', 'm', function () use (&$n) {
     $n++;
-    $body = $n === 1 ? $GLOBALS['WRONG'] : $GLOBALS['GOOD'];
-    return json_encode(['choices' => [['message' => ['content' => $body]]]]);
-}]);
+    return $n === 1 ? $GLOBALS['WRONG'] : $GLOBALS['GOOD'];
+}))->solve('2x+3=11');
 check('retry recovers', $r['verified'] === true && $r['retries'] === 1);
 
 /* invalid JSON then ok */
 $n = 0;
 $r = (new Solver('sk', 'https://api.x', 'm', function () use (&$n) {
     $n++;
-    $content = $n === 1 ? 'no json' : $GLOBALS['GOOD'];
-    return json_encode(['choices' => [['message' => ['content' => $content]]]]);
-}]);
+    return $n === 1 ? 'no json' : $GLOBALS['GOOD'];
+}))->solve('1+1');
 check('invalid json then ok', $r['verified'] === true);
 
 /* invalid twice raises */
@@ -88,7 +86,7 @@ try {
 }
 
 /* retry still wrong => unverified */
-$r = (new Solver('sk', 'https://api.x', 'm', fn() => json_encode(['choices' => [['message' => ['content' => $GLOBALS['WRONG']]]]])))->solve('2x+3=11');
+$r = (new Solver('sk', 'https://api.x', 'm', fn() => $GLOBALS['WRONG']))->solve('2x+3=11');
 check('still wrong unverified', $r['verified'] === false && $r['retries'] === 1);
 
 echo $failures === 0 ? "\nALL PASS\n" : "\n{$failures} FAILURES\n";
