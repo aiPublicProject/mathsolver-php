@@ -223,7 +223,7 @@ final class Solver
         try {
             $parsed = self::parseReply($call());
         } catch (SolverError $e) {
-            if ($e->code !== 'INVALID_JSON') throw $e;
+            if ($e->errorCode !== 'INVALID_JSON') throw $e;
             $messages[] = ['role' => 'assistant', 'content' => 'invalid JSON'];
             $messages[] = ['role' => 'user', 'content' => 'Your reply was not valid JSON. Reply again with the exact strict JSON shape.'];
             $parsed = self::parseReply($call());
