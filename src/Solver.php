@@ -183,18 +183,33 @@ final class Solver
     }
 
     /**
-     * Solve with BYOK key on an OpenAI-compatible endpoint.
-     * $transport: callable(url, bodyArray, apiKey) => model reply string
+     * BYOK client for an OpenAI-compatible endpoint. Instantiate once, solve many.
+     *
+     * $solver = new MathSolver\Solver($apiKey, 'https://api.deepseek.com/v1', 'deepseek-chat');
+     * $result = $solver->solve('2x + 3 = 11, solve for x');
      */
-    public static function solve(string $problem, array $opts = []): array
-    {
-        $apiKey = $opts['apiKey'] ?? '';
-        $baseUrl = rtrim($opts['baseUrl'] ?? 'https://api.openai.com/v1', '/');
-        $model = $opts['model'] ?? 'gpt-4o-mini';
-        $transport = $opts['transport'] ?? [self::class, 'defaultTransport'];
-        if ($apiKey === '') {
+    public function __construct(
+        private string $apiKey,
+        private string $baseUrl = 'https://api.openai.com/v1',
+        private string $model = 'gpt-4o-mini',
+        private $transport = null,
+    ) {
+        if ($this->apiKey === '') {
             throw new SolverError('NO_API_KEY', 'apiKey is required (BYOK)');
         }
+        $base = rtrim($this->baseUrl, '/');
+        if (!preg_match('#^https?://#', $base)) {
+            throw new SolverError('BAD_BASE_URL', 'baseUrl must be an http(s) URL, e.g. https://api.deepseek.com/v1');
+        }
+        $this->baseUrl = $base;
+    }
+
+    public function solve(string $problem): array
+    {
+        $apiKey = $this->apiKey;
+        $baseUrl = $this->baseUrl;
+        $model = $this->model;
+        $transport = $this->transport ?? [self::class, 'defaultTransport'];
         if (trim($problem) === '') {
             throw new SolverError('NO_PROBLEM', 'problem must be non-empty');
         }

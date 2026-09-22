@@ -34,20 +34,27 @@ foreach (['system("x")', '1+2)', 'foo(1)', ''] as $bad) {
     catch (SolverError) { check("rejects '{$bad}'", true); }
 }
 
+/* constructor validation */
+try { new Solver(''); check('NO_API_KEY at construct', false); }
+catch (SolverError $e) { check('NO_API_KEY at construct', $e->code === 'NO_API_KEY'); }
+try { new Solver('sk', 'not-a-url'); check('BAD_BASE_URL at construct', false); }
+catch (SolverError $e) { check('BAD_BASE_URL at construct', $e->code === 'BAD_BASE_URL'); }
+
 /* solve: verified first try */
 $calls = 0;
-$r = Solver::solve('2x + 3 = 11, solve for x', ['apiKey' => 'sk-test', 'transport' =>
+$solver = new Solver('sk-test', 'https://api.deepseek.com/v1', 'deepseek-chat',
     function ($url, $body, $key) use (&$calls, &$seen) {
         $calls++;
         $seen = [$url, $body, $key];
         return json_encode(['choices' => [['message' => ['content' => $GLOBALS['GOOD']]]]]);
-    }]);
+    });
+$r = $solver->solve('2x + 3 = 11, solve for x');
 check('verified first try', $r['verified'] === true && $r['retries'] === 0 && abs($r['evaluated'] - 4) < 1e-9 && $calls === 1);
 check('url/body/key passed', str_ends_with($seen[0], '/chat/completions') && $seen[2] === 'sk-test');
 
 /* solve: mismatch then corrected */
 $n = 0;
-$r = Solver::solve('2x+3=11', ['apiKey' => 'sk', 'transport' => function () use (&$n) {
+$r = (new Solver('sk', 'https://api.x', 'm', function () use (&$n) {
     $n++;
     $body = $n === 1 ? $GLOBALS['WRONG'] : $GLOBALS['GOOD'];
     return json_encode(['choices' => [['message' => ['content' => $body]]]]);
@@ -56,7 +63,7 @@ check('retry recovers', $r['verified'] === true && $r['retries'] === 1);
 
 /* invalid JSON then ok */
 $n = 0;
-$r = Solver::solve('1+1', ['apiKey' => 'sk', 'transport' => function () use (&$n) {
+$r = (new Solver('sk', 'https://api.x', 'm', function () use (&$n) {
     $n++;
     $content = $n === 1 ? 'no json' : $GLOBALS['GOOD'];
     return json_encode(['choices' => [['message' => ['content' => $content]]]]);
@@ -64,27 +71,24 @@ $r = Solver::solve('1+1', ['apiKey' => 'sk', 'transport' => function () use (&$n
 check('invalid json then ok', $r['verified'] === true);
 
 /* invalid twice raises */
-try { Solver::solve('1+1', ['apiKey' => 'sk', 'transport' => fn() => 'nothing']); check('invalid twice raises', false); }
+try { (new Solver('sk', 'https://api.x', 'm', fn() => 'nothing'))->solve('1+1'); check('invalid twice raises', false); }
 catch (SolverError $e) { check('invalid twice raises', $e->code === 'INVALID_JSON'); }
 
 /* no api key */
-try { Solver::solve('1+1', []); check('NO_API_KEY', false); }
-catch (SolverError $e) { check('NO_API_KEY', $e->code === 'NO_API_KEY'); }
-
 /* http error no retry */
 $calls = 0;
 try {
-    Solver::solve('1+1', ['apiKey' => 'sk', 'transport' => function () use (&$calls) {
+    (new Solver('sk', 'https://api.x', 'm', function () use (&$calls) {
         $calls++;
         throw new SolverError('HTTP_ERROR', '401');
-    }]);
+    }))->solve('1+1');
     check('http error no retry', false);
 } catch (SolverError $e) {
     check('http error no retry', $e->code === 'HTTP_ERROR' && $calls === 1);
 }
 
 /* retry still wrong => unverified */
-$r = Solver::solve('2x+3=11', ['apiKey' => 'sk', 'transport' => fn() => json_encode(['choices' => [['message' => ['content' => $GLOBALS['WRONG']]]]])]);
+$r = (new Solver('sk', 'https://api.x', 'm', fn() => json_encode(['choices' => [['message' => ['content' => $GLOBALS['WRONG']]]]])))->solve('2x+3=11');
 check('still wrong unverified', $r['verified'] === false && $r['retries'] === 1);
 
 echo $failures === 0 ? "\nALL PASS\n" : "\n{$failures} FAILURES\n";
