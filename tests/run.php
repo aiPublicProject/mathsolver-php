@@ -36,9 +36,9 @@ foreach (['system("x")', '1+2)', 'foo(1)', ''] as $bad) {
 
 /* constructor validation */
 try { new Solver(''); check('NO_API_KEY at construct', false); }
-catch (SolverError $e) { check('NO_API_KEY at construct', $e->code === 'NO_API_KEY'); }
+catch (SolverError $e) { check('NO_API_KEY at construct', $e->errorCode === 'NO_API_KEY'); }
 try { new Solver('sk', 'not-a-url'); check('BAD_BASE_URL at construct', false); }
-catch (SolverError $e) { check('BAD_BASE_URL at construct', $e->code === 'BAD_BASE_URL'); }
+catch (SolverError $e) { check('BAD_BASE_URL at construct', $e->errorCode === 'BAD_BASE_URL'); }
 
 /* solve: verified first try */
 $calls = 0;
@@ -70,7 +70,7 @@ check('invalid json then ok', $r['verified'] === true);
 
 /* invalid twice raises */
 try { (new Solver('sk', 'https://api.x', 'm', fn() => 'nothing'))->solve('1+1'); check('invalid twice raises', false); }
-catch (SolverError $e) { check('invalid twice raises', $e->code === 'INVALID_JSON'); }
+catch (SolverError $e) { check('invalid twice raises', $e->errorCode === 'INVALID_JSON'); }
 
 /* no api key */
 /* http error no retry */
@@ -82,7 +82,7 @@ try {
     }))->solve('1+1');
     check('http error no retry', false);
 } catch (SolverError $e) {
-    check('http error no retry', $e->code === 'HTTP_ERROR' && $calls === 1);
+    check('http error no retry', $e->errorCode === 'HTTP_ERROR' && $calls === 1);
 }
 
 /* retry still wrong => unverified */

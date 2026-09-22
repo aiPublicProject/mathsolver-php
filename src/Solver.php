@@ -9,7 +9,7 @@ namespace MathSolver;
 
 class SolverError extends \Exception
 {
-    public function __construct(public readonly string $code, string $message)
+    public function __construct(public readonly string $errorCode, string $message)
     {
         parent::__construct($message);
     }
