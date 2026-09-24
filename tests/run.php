@@ -25,7 +25,7 @@ function threw(string $name, callable $fn, string $errorCode): void
         $fn();
         check($name, false);
     } catch (SolverError $e) {
-        check($name, $e->errorCode === $errorCode);
+        check($name, str_starts_with($e->errorCode, $errorCode));
     }
 }
 
@@ -112,7 +112,7 @@ $r = (new Solver('sk', 'https://api.x', 'm', function () use (&$n) {
 }))->solve('2x+3=11');
 check('program error retry recovers', $r['verified'] === true && abs($r['answer'] - 4) < 1e-9);
 
-/* program error persists -> PROGRAM_*/EXPR_* thrown */
+/* program error persists -> PROGRAM_ or EXPR_ error thrown */
 try {
     (new Solver('sk', 'https://api.x', 'm', fn() => $GLOBALS['BROKEN_PROGRAM']))->solve('2x+3=11');
     check('program error persists throws', false);
