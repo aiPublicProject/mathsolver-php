@@ -307,7 +307,11 @@ final class Solver
             ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
             ['role' => 'user', 'content' => $problem],
         ];
-        $call = fn() => $transport($url, ['model' => $this->model, 'messages' => $messages, 'temperature' => 0], $this->apiKey);
+        // by-reference capture: retry paths append corrective messages and
+        // later calls must carry them (fn() would freeze the original array)
+        $call = function () use (&$messages, $transport, $url): string {
+            return $transport($url, ['model' => $this->model, 'messages' => $messages, 'temperature' => 0], $this->apiKey);
+        };
 
         try {
             $parsed = self::parseReply($call());
