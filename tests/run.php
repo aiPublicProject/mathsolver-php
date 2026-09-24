@@ -150,7 +150,8 @@ check('still failing unverified', abs($r['answer'] - 4) < 1e-9 && $r['verified']
 $smokeKey = getenv('SMOKE_API_KEY');
 if ($smokeKey !== false && $smokeKey !== '') {
     $base = getenv('SMOKE_BASE_URL') ?: 'https://api.openai.com/v1';
-    $r = (new Solver($smokeKey, $base))->solve('2x + 3 = 11, solve for x');
+    $model = getenv('SMOKE_MODEL') ?: 'gpt-4o-mini';
+    $r = (new Solver($smokeKey, $base, $model))->solve('2x + 3 = 11, solve for x');
     echo 'smoke: answer=' . $r['answer'] . ' verified=' . var_export($r['verified'], true) . ' retries=' . $r['retries'] . "\n";
     if (!($r['verified'] && abs($r['answer'] - 4) < 1e-9)) {
         exit(1);
