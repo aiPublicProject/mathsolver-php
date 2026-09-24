@@ -1,8 +1,12 @@
 <?php
 /**
- * mathsolver-php — BYOK AI math solver with independent verification.
- * An answer is only verified=true when the model's verification expression
- * (pure arithmetic) is evaluated locally and matches the answer.
+ * mathsolver-php — BYOK AI math solver with execution-based verification (v0.2).
+ *
+ * Correctness model (PAL-style): the model never states the answer.
+ * It returns a small JavaScript-like PROGRAM; this package executes the
+ * program deterministically and the execution output IS the answer.
+ * For equations, a CHECK expression ({x} placeholder) must evaluate to 0
+ * when the computed answer is substituted back into the original equation.
  */
 
 namespace MathSolver;
@@ -19,20 +23,37 @@ final class Solver
 {
     public const SYSTEM_PROMPT = "You are a precise math solver.\n"
         . "Reply with STRICT JSON only, no markdown fences, in this exact shape:\n"
-        . '{"answer": <number>, "steps": [<string>, ...], "verification": {"expression": "<string>"}}' . "\n"
+        . '{"program": "<string>", "steps": [<string>, ...], "check": "<string>"}' . "\n"
         . "Rules:\n"
-        . "- \"answer\" must be a single number (the final result).\n"
-        . "- \"steps\" must be an array of short plain-language explanation strings.\n"
-        . "- \"verification.expression\" must be a pure arithmetic expression that\n"
-        . "  evaluates to the answer. Allowed: numbers, + - * / % ^ ( ), and the\n"
-        . "  functions abs sqrt sin cos tan ln log exp floor ceil round min max\n"
-        . "  (log is base 10, ln is natural), and the constants pi and e.\n"
-        . "- The expression must recompute the answer independently.";
+        . "- \"program\" is a small JavaScript-like program that computes the final answer.\n"
+        . "  One statement per line (or ; separated). Allowed statements:\n"
+        . "      let NAME = EXPRESSION\n"
+        . "      result = EXPRESSION\n"
+        . "  EXPRESSIONs may use numbers, + - * / % ^ ( ), the functions\n"
+        . "  abs sqrt sin cos tan ln log exp floor ceil round min max\n"
+        . "  (log is base 10, ln is natural), the constants pi and e, and any\n"
+        . "  variable defined by an earlier let. The value assigned to \"result\"\n"
+        . "  is the answer. Never state the answer as a number in text.\n"
+        . "- \"steps\" is an array of short plain-language explanation strings.\n"
+        . "- \"check\" is a verification expression containing the placeholder {x}.\n"
+        . "  After solving, {x} is replaced by the computed answer and the whole\n"
+        . "  expression must evaluate to 0.\n"
+        . "  For equations, substitute the answer back into the original equation\n"
+        . "  (e.g. 2x+3=11 -> \"2*{x}+3-11\").\n"
+        . "  For arithmetic, recompute via a different path and subtract the answer\n"
+        . "  (e.g. 15% of 80 -> \"80*15/100-{x}\"). Provide \"check\" whenever possible.";
+
+    private static function correctionPrompt(string $reason): string
+    {
+        return "Your submission failed verification: {$reason}. "
+            . 'Re-derive the problem carefully and reply again with the same strict JSON shape.';
+    }
 
     /**
      * Evaluate a pure arithmetic expression string (no eval()).
+     * $env maps variable names (case-sensitive, shadow pi/e) to values.
      */
-    public static function evalExpression(string $src): float
+    public static function evalExpression(string $src, ?array $env = null): float
     {
         $src = trim($src);
         if ($src === '') {
@@ -40,7 +61,7 @@ final class Solver
         }
         $tokens = self::tokenize($src);
         $pos = 0;
-        $value = self::parseExpr($tokens, $pos);
+        $value = self::parseExpr($tokens, $pos, $env);
         if ($pos !== count($tokens)) {
             throw new SolverError('EXPR_TRAILING', 'trailing tokens');
         }
@@ -83,65 +104,69 @@ final class Solver
         return $tokens[$pos++];
     }
 
-    private static function parseExpr(array $t, int &$p): float
+    private static function parseExpr(array $t, int &$p, ?array $env): float
     {
-        $v = self::parseTerm($t, $p);
+        $v = self::parseTerm($t, $p, $env);
         while (self::peek($t, $p) !== null && in_array($t[$p][0], ['+', '-'], true)) {
             $op = self::eat($t, $p)[0];
-            $r = self::parseTerm($t, $p);
+            $r = self::parseTerm($t, $p, $env);
             $v = $op === '+' ? $v + $r : $v - $r;
         }
         return $v;
     }
 
-    private static function parseTerm(array $t, int &$p): float
+    private static function parseTerm(array $t, int &$p, ?array $env): float
     {
-        $v = self::parseUnary($t, $p);
+        $v = self::parseUnary($t, $p, $env);
         while (self::peek($t, $p) !== null && in_array($t[$p][0], ['*', '/', '%'], true)) {
             $op = self::eat($t, $p)[0];
-            $r = self::parseUnary($t, $p);
+            $r = self::parseUnary($t, $p, $env);
             $v = $op === '*' ? $v * $r : ($op === '/' ? $v / $r : fmod($v, $r));
         }
         return $v;
     }
 
-    private static function parseUnary(array $t, int &$p): float
+    private static function parseUnary(array $t, int &$p, ?array $env): float
     {
         if (self::peek($t, $p) !== null && $t[$p][0] === '-') {
             self::eat($t, $p);
-            return -self::parseUnary($t, $p);
+            return -self::parseUnary($t, $p, $env);
         }
         if (self::peek($t, $p) !== null && $t[$p][0] === '+') {
             self::eat($t, $p);
-            return self::parseUnary($t, $p);
+            return self::parseUnary($t, $p, $env);
         }
-        return self::parsePower($t, $p);
+        return self::parsePower($t, $p, $env);
     }
 
-    private static function parsePower(array $t, int &$p): float
+    private static function parsePower(array $t, int &$p, ?array $env): float
     {
-        $base = self::parseAtom($t, $p);
+        $base = self::parseAtom($t, $p, $env);
         if (self::peek($t, $p) !== null && $t[$p][0] === '^') {
             self::eat($t, $p);
-            return pow($base, self::parseUnary($t, $p));
+            return pow($base, self::parseUnary($t, $p, $env));
         }
         return $base;
     }
 
-    private static function parseAtom(array $t, int &$p): float
+    private static function parseAtom(array $t, int &$p, ?array $env): float
     {
         $tok = self::eat($t, $p);
         if ($tok[0] === 'num') {
             return $tok[1];
         }
         if ($tok[0] === 'id') {
-            $name = strtolower($tok[1]);
+            $raw = $tok[1];
+            if ($env !== null && array_key_exists($raw, $env)) {
+                return $env[$raw];
+            }
+            $name = strtolower($raw);
             if (self::peek($t, $p) !== null && $t[$p][0] === '(') {
                 self::eat($t, $p);
-                $args = [self::parseExpr($t, $p)];
+                $args = [self::parseExpr($t, $p, $env)];
                 while (self::peek($t, $p) !== null && $t[$p][0] === ',') {
                     self::eat($t, $p);
-                    $args[] = self::parseExpr($t, $p);
+                    $args[] = self::parseExpr($t, $p, $env);
                 }
                 if (self::eat($t, $p)[0] !== ')') {
                     throw new SolverError('EXPR_SYNTAX', 'expected )');
@@ -153,7 +178,7 @@ final class Solver
             throw new SolverError('EXPR_UNKNOWN_ID', "unknown identifier {$name}");
         }
         if ($tok[0] === '(') {
-            $v = self::parseExpr($t, $p);
+            $v = self::parseExpr($t, $p, $env);
             if (self::eat($t, $p)[0] !== ')') {
                 throw new SolverError('EXPR_SYNTAX', 'expected )');
             }
@@ -182,6 +207,66 @@ final class Solver
         };
     }
 
+    /* ---------------- program interpreter ---------------- */
+
+    /**
+     * Execute a model-generated program. Statements (one per line or ;
+     * separated): let NAME = EXPR | NAME = EXPR | bare EXPR. The answer is
+     * the value of `result`, else the last bare expression. The model never
+     * states the answer as a number — execution output IS the answer.
+     */
+    public static function runProgram(string $src): float
+    {
+        if (trim($src) === '') {
+            throw new SolverError('PROGRAM_EMPTY', 'empty program');
+        }
+        $env = [];
+        $resultDefined = false;
+        $lastDefined = false;
+        $lastValue = 0.0;
+        $lines = preg_split('/[\n;]+/', $src) ?: [];
+        foreach ($lines as $raw) {
+            $line = trim($raw);
+            if ($line === '') {
+                continue;
+            }
+            if (preg_match('/^let\s+([a-zA-Z_]\w*)\s*=\s*(.+)$/s', $line, $m1)) {
+                $env[$m1[1]] = self::evalExpression($m1[2], $env);
+                if ($m1[1] === 'result') $resultDefined = true;
+                continue;
+            }
+            if (preg_match('/^([a-zA-Z_]\w*)\s*=\s*(.+)$/s', $line, $m2)) {
+                $env[$m2[1]] = self::evalExpression($m2[2], $env);
+                if ($m2[1] === 'result') $resultDefined = true;
+                continue;
+            }
+            $lastValue = self::evalExpression($line, $env);
+            $lastDefined = true;
+        }
+        if ($resultDefined) {
+            return $env['result'];
+        }
+        if ($lastDefined) {
+            return $lastValue;
+        }
+        throw new SolverError('PROGRAM_NO_RESULT', 'program produced no result');
+    }
+
+    /**
+     * Substitute the computed answer into a check expression ({x} placeholder)
+     * and evaluate it. Returns ['value' => float, 'passed' => bool];
+     * passed when the value is ~0 (scaled tolerance).
+     */
+    public static function runCheck(string $checkSrc, float $answer): array
+    {
+        $substituted = preg_replace('/\{\s*x\s*\}/i', '(' . json_encode($answer) . ')', $checkSrc);
+        $value = self::evalExpression((string)$substituted);
+        return [
+            'value' => $value,
+            'passed' => abs($value) <= 1e-6 * max(1.0, abs($answer)),
+        ];
+    }
+
     /**
      * BYOK client for an OpenAI-compatible endpoint. Instantiate once, solve many.
      *
@@ -204,21 +289,25 @@ final class Solver
         $this->baseUrl = $base;
     }
 
+    /**
+     * Test seam for the HTTP interface below the transport: callable
+     * (url, headers[], bodyJson) => [status, rawBody]; null = real HTTP.
+     */
+    public $httpPost = null;
+
     public function solve(string $problem): array
     {
-        $apiKey = $this->apiKey;
-        $baseUrl = $this->baseUrl;
-        $model = $this->model;
-        $transport = $this->transport ?? [self::class, 'defaultTransport'];
+        $transport = $this->transport
+            ?? fn(string $u, array $b, string $k): string => $this->transportVia($u, $b, $k);
         if (trim($problem) === '') {
             throw new SolverError('NO_PROBLEM', 'problem must be non-empty');
         }
-        $url = "{$baseUrl}/chat/completions";
+        $url = "{$this->baseUrl}/chat/completions";
         $messages = [
             ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
             ['role' => 'user', 'content' => $problem],
         ];
-        $call = fn() => $transport($url, ['model' => $model, 'messages' => $messages, 'temperature' => 0], $apiKey);
+        $call = fn() => $transport($url, ['model' => $this->model, 'messages' => $messages, 'temperature' => 0], $this->apiKey);
 
         try {
             $parsed = self::parseReply($call());
@@ -229,48 +318,97 @@ final class Solver
             $parsed = self::parseReply($call());
         }
 
-        $evaluate = function (array $p): array {
+        $attempt = function (array $p): array {
             try {
-                $ev = self::evalExpression($p['expression']);
-                return [$ev, self::equal($ev, $p['answer'])];
-            } catch (SolverError) {
-                return [null, false];
+                $answer = self::runProgram($p['program']);
+                $out = ['ok' => true, 'answer' => $answer, 'checkValue' => null, 'verified' => false];
+                if ($p['check'] !== '') {
+                    $r = self::runCheck($p['check'], $answer);
+                    $out['checkValue'] = $r['value'];
+                    $out['verified'] = $r['passed'];
+                }
+                return $out;
+            } catch (SolverError $e) {
+                return ['ok' => false, 'error' => $e];
             }
         };
 
-        [$evaluated, $verified] = $evaluate($parsed);
+        $outcome = $attempt($parsed);
         $retries = 0;
-        if (!$verified) {
+        if (!$outcome['ok'] || !$outcome['verified']) {
             $retries = 1;
-            $messages[] = ['role' => 'assistant', 'content' => json_encode($parsed)];
-            $messages[] = ['role' => 'user', 'content' => sprintf(
-                'Your verification expression evaluated to %s, which does not match your answer %s. Re-derive carefully and reply again with the same strict JSON shape.',
-                $evaluated ?? 'an error', $parsed['answer']
-            )];
-            try {
-                $second = self::parseReply($call());
-                [$ev2, $ok2] = $evaluate($second);
-                if ($ev2 !== null) $evaluated = $ev2;
-                if ($ok2) { $parsed = $second; $verified = true; }
-            } catch (SolverError) {
+            $reason = !$outcome['ok']
+                ? sprintf('program failed to execute (%s: %s)', $outcome['error']->errorCode, $outcome['error']->getMessage())
+                : sprintf('check evaluated to %s instead of 0', var_export($outcome['checkValue'], true));
+            $messages[] = ['role' => 'assistant', 'content' => json_encode([
+                'program' => $parsed['program'],
+                'steps' => $parsed['steps'],
+                'check' => $parsed['check'] === '' ? null : $parsed['check'],
+            ])];
+            $messages[] = ['role' => 'user', 'content' => self::correctionPrompt($reason)];
+            $secondParsed = self::parseReply($call());
+            $second = $attempt($secondParsed);
+            if (!$second['ok']) {
+                throw $second['error']; // PROGRAM_* error persisted after retry
             }
+            $parsed = $secondParsed;
+            $outcome = $second;
         }
-        return ['answer' => $parsed['answer'], 'steps' => $parsed['steps'], 'expression' => $parsed['expression'],
-                'evaluated' => $evaluated, 'verified' => $verified, 'retries' => $retries];
+        return ['answer' => $outcome['answer'], 'steps' => $parsed['steps'], 'program' => $parsed['program'],
+                'check' => $parsed['check'], 'checkValue' => $outcome['checkValue'],
+                'verified' => $outcome['verified'], 'retries' => $retries];
+    }
+
+    private function transportVia(string $url, array $body, string $apiKey): string
+    {
+        $post = $this->httpPost ?? [self::class, 'realHttpPost'];
+        [$status, $raw] = $post($url, [
+            'Content-Type' => 'application/json',
+            'Authorization' => "Bearer {$apiKey}",
+        ], (string)json_encode($body));
+        return self::contentFromResponse((int)$status, (string)$raw);
     }
 
     public static function defaultTransport(string $url, array $body, string $apiKey): string
     {
+        [$status, $raw] = self::realHttpPost($url, [
+            'Content-Type' => 'application/json',
+            'Authorization' => "Bearer {$apiKey}",
+        ], (string)json_encode($body));
+        return self::contentFromResponse($status, $raw);
+    }
+
+    /** Real HTTP POST via the stream wrapper. Returns [status, rawBody]. */
+    public static function realHttpPost(string $url, array $headers, string $bodyJson): array
+    {
+        $header = '';
+        foreach ($headers as $k => $v) {
+            $header .= "{$k}: {$v}\r\n";
+        }
         $ctx = stream_context_create(['http' => [
             'method' => 'POST',
-            'header' => "Content-Type: application/json\r\nAuthorization: Bearer {$apiKey}\r\n",
-            'content' => json_encode($body),
+            'header' => $header,
+            'content' => $bodyJson,
             'timeout' => 60,
             'ignore_errors' => true,
         ]]);
         $raw = @file_get_contents($url, false, $ctx);
         if ($raw === false) {
             throw new SolverError('HTTP_ERROR', 'API call failed');
+        }
+        $status = 0;
+        foreach ($http_response_header ?? [] as $h) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $h, $m)) {
+                $status = (int)$m[1];
+            }
+        }
+        return [$status, (string)$raw];
+    }
+
+    private static function contentFromResponse(int $status, string $raw): string
+    {
+        if ($status >= 300) {
+            throw new SolverError('HTTP_ERROR', "API responded {$status}");
         }
         $data = json_decode($raw, true);
         $content = $data['choices'][0]['message']['content'] ?? null;
@@ -291,24 +429,12 @@ final class Solver
         if (!is_array($data)) {
             throw new SolverError('INVALID_JSON', 'reply was not valid JSON');
         }
-        $answer = $data['answer'] ?? null;
-        if (is_string($answer)) {
-            preg_match('/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/', $answer, $mm);
-            $answer = $mm ? (float)$mm[0] : null;
-        }
-        if (!is_int($answer) && !is_float($answer)) {
-            throw new SolverError('INVALID_JSON', 'missing numeric answer');
-        }
-        $expression = $data['verification']['expression'] ?? null;
-        if (!is_string($expression)) {
-            throw new SolverError('INVALID_JSON', 'missing verification.expression');
+        $program = $data['program'] ?? null;
+        if (!is_string($program) || trim($program) === '') {
+            throw new SolverError('INVALID_JSON', 'missing program');
         }
         $steps = array_map('strval', is_array($data['steps'] ?? null) ? $data['steps'] : []);
-        return ['answer' => (float)$answer, 'steps' => $steps, 'expression' => $expression];
-    }
-
-    private static function equal(float $a, float $b): bool
-    {
-        return abs($a - $b) <= 1e-6 * max(1.0, abs($a), abs($b));
+        $check = (is_string($data['check'] ?? null) && trim($data['check']) !== '') ? $data['check'] : '';
+        return ['program' => $program, 'steps' => $steps, 'check' => $check];
     }
 }
